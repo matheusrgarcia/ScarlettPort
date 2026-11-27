@@ -1605,14 +1605,28 @@ mod host {
             let sensitivity = mouse_look_sensitivity();
             if sensitivity <= 0.0 || !focused() {
                 self.look = (0.0, 0.0);
+                // The pointer is free again: `lifecycle` shows it on its next WM_SETCURSOR.
+                CURSOR_LOCKED.store(false, Ordering::Release);
                 return None;
             }
             let mut at = POINT { x: 0, y: 0 };
             let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-            // SAFETY: plain queries into locals; the window is ours (focused).
-            let ok = unsafe { GetCursorPos(&mut at) != 0 && GetWindowRect(GetForegroundWindow(), &mut rect) != 0 };
+            // SAFETY: plain query; the window is ours (focused).
+            let window = unsafe { GetForegroundWindow() };
+            // SAFETY: plain queries into locals.
+            let ok = unsafe { GetCursorPos(&mut at) != 0 && GetWindowRect(window, &mut rect) != 0 };
             if !ok {
                 return None;
+            }
+            // [patch] The pointer is held in the window's middle from here on, so hide it there
+            // as the `SCARLETT_KBM` lock does (`lifecycle`, WM_SETCURSOR): before, it stayed
+            // visible, stuck in the middle of the picture.
+            if !CURSOR_LOCKED.swap(true, Ordering::AcqRel) {
+                let lparam = (HTCLIENT as isize) | ((WM_MOUSEMOVE as isize) << 16);
+                // SAFETY: asynchronous post to our own process's foreground window.
+                unsafe {
+                    let _ = PostMessageW(window, WM_SETCURSOR, window as usize, lparam);
+                }
             }
             let (cx, cy) = ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
             // The pointer goes back to the window's middle each poll, so it never reaches an edge.
